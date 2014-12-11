@@ -25,6 +25,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"sync"
 	"syscall"
@@ -41,6 +42,8 @@ import (
 const (
 	frameSize      = 1500 - (14 + 20 + 32) // XXX: 1498 instead of 1500?
 	maxPayloadSize = frameSize - (boxOverhead + 2)
+
+	maxPendingFrames = 64
 
 	boxKeySize         = 32
 	boxNonceSize       = 24
@@ -83,7 +86,7 @@ type ServerConfig struct {
 	ServerCert cert.Certificate
 
 	// AuthKey is the optional handshake authorization shared-secret.
-	AuthKey    []byte
+	AuthKey []byte
 }
 
 type basketListener struct {
@@ -163,6 +166,7 @@ func Listen(network string, laddr *net.TCPAddr, config *ServerConfig) (*basketLi
 }
 
 type basketConn struct {
+	sync.Mutex
 	sync.WaitGroup
 	conn net.Conn
 
@@ -174,9 +178,15 @@ type basketConn struct {
 	rxBoxNoncePrefix [boxNoncePrefixSize]byte
 	rxBoxNonceCtr    uint64
 
-	recvBuf bytes.Buffer
+	writeChan chan []byte
+	recvBuf   bytes.Buffer
 
 	isClient bool
+	isClosed bool
+
+	lastSiteResponseTime time.Time
+	realBytes            uint64
+	junkBytes            uint64
 }
 
 func (c *basketConn) Read(b []byte) (n int, err error) {
@@ -234,53 +244,52 @@ func (c *basketConn) Read(b []byte) (n int, err error) {
 }
 
 func (c *basketConn) Write(b []byte) (n int, err error) {
-	// HACKHACKHACK: For now just write onto the network instead of doing the
-	// CS-BuFLO things.
+	defer func() {
+		// If this gets triggered, it because we tried to write to the closed
+		// writeChan.
+		if r := recover(); r != nil {
+			err = syscall.EBADF
+		}
+	}()
+
 	for toSend := len(b); toSend > 0; {
+		// Cut up the write buffer into slices that are at most maxPayloadSize
+		// bytes long, and dump them into the outgoing write buffer so that the
+		// worker can do the write.
 		payloadLen := toSend
 		if payloadLen > maxPayloadSize {
 			payloadLen = maxPayloadSize
 		}
 
-		if c.txBoxNonceCtr == 0 {
-			// Ensuring that the counter does not wrap is the user's problem,
-			// though that is entirely unrealistic at any presently obtainable
-			// data rate.
-			return n, ErrCounterWrapped
-		}
-		var nonce [boxNonceSize]byte
-		copy(nonce[:boxNoncePrefixSize], c.txBoxNoncePrefix[:])
-		binary.BigEndian.PutUint64(nonce[boxNoncePrefixSize:], c.txBoxNonceCtr)
-		c.txBoxNonceCtr++
-
-		var frame [frameSize - boxOverhead]byte
-		binary.BigEndian.PutUint16(frame[0:2], uint16(payloadLen))
-		copy(frame[2:], b[:payloadLen])
-
-		box := make([]byte, 0, frameSize)
-		box = secretbox.Seal(box, frame[:], &nonce, &c.txBoxKey)
-
-		if _, err = c.conn.Write(box[:]); err != nil {
-			// The return value for n here will be inaccurate but failures at
-			// this point are fatal to the calling code so it doesn't matter.
-			return
-		}
-
+		// output-buff <- output-buff || data
+		// NB: managing real-bytes is done from the worker
+		frame := make([]byte, payloadLen)
+		copy(frame, b[:payloadLen])
+		c.writeChan <- frame
 		toSend -= payloadLen
 		n += payloadLen
 		b = b[payloadLen:]
+
+		// last-site-response-time <- CURRENT-TIME
+		c.Lock()
+		c.lastSiteResponseTime = time.Now()
+		c.Unlock()
 	}
 
-	// XXX: Check to see if the connection is still open.
-
-	// output-buff <- output-buff || data
-	// real-bytes <- real-bytes + length(m)
-	// last-site-response-time <- CURRENT-TIME
 	return
 }
 
 func (c *basketConn) Close() error {
-	// XXX: Tear down the CS-BuFLO related things.
+	c.Lock()
+	defer c.Unlock()
+
+	if c.isClosed {
+		return syscall.EBADF
+	}
+	c.isClosed = true
+
+	// Tear down the CS-BuFLO related things.
+	close(c.writeChan)
 	c.Wait()
 
 	// Clear out the keys.
@@ -315,38 +324,145 @@ func (c *basketConn) SetWriteDeadline(t time.Time) error {
 }
 
 func (c *basketConn) doWrite(b []byte) (n, j int, err error) {
-	return
+	if b != nil && len(b) > maxPayloadSize {
+		panic("doWrite(): len(b) > maxPayloadSize")
+	}
+
+	if c.txBoxNonceCtr == 0 {
+		// Ensuring that the counter does not wrap is the user's problem,
+		// though that is entirely unrealistic at any presently obtainable
+		// data rate.
+		return 0, 0, ErrCounterWrapped
+	}
+	var nonce [boxNonceSize]byte
+	copy(nonce[:boxNoncePrefixSize], c.txBoxNoncePrefix[:])
+	binary.BigEndian.PutUint64(nonce[boxNoncePrefixSize:], c.txBoxNonceCtr)
+	c.txBoxNonceCtr++
+
+	var frame [frameSize - boxOverhead]byte
+	bLen := 0
+	if b != nil {
+		bLen = len(b)
+		copy(frame[2:], b)
+	}
+	binary.BigEndian.PutUint16(frame[0:2], uint16(bLen))
+
+	box := make([]byte, 0, frameSize)
+	box = secretbox.Seal(box, frame[:], &nonce, &c.txBoxKey)
+
+	if _, err = c.conn.Write(box[:]); err != nil {
+		// The return value for n here will be inaccurate but failures at
+		// this point are fatal to the calling code so it doesn't matter.
+		return
+	}
+	return bLen, maxPayloadSize - bLen, nil
 }
 
 func (c *basketConn) writeWorker() {
 	// This is where the magic happens.
+writeLoop:
 	for {
-		// HACKHACKHACK: One day this will handle all the writes.
-		break
+		var err error
+		j := 0
+		isDone := false
 
-		// if output-buff is not empty
-		//  rho-stats <- rho-stats || CURRENT-TIME
+		// XXX: Check if network conditions would allow for a frame to be
+		// written.
 
-		// (output-buf, j) <- CS-SEND(s, output-buff)
+		select {
+		case frame, ok := <-c.writeChan:
+			if !ok {
+				// The writeChan is closed.
+				break writeLoop
+			}
+
+			// log.Printf("scheduling frame xmit: %d bytes", len(frame))
+
+			// if output-buff is not empty
+			//  rho-stats <- rho-stats || CURRENT-TIME
+
+			// (output-buf, j) <- CS-SEND(s, output-buff)
+			c.realBytes += uint64(len(frame))
+			_, j, err = c.doWrite(frame)
+			if err != nil {
+				// No nice way to pass this back to the caller, so just close
+				// the connection and bail out.
+				c.Close()
+				break writeLoop
+			}
+		case <-time.After(0):
+			// Meh, the write buffer is empty, check if we should be idle, and
+			// if not inject some padding.
+			if isDone = c.doneXmitting(); !isDone {
+				// log.Print("scheduling padding xmit")
+				_, j, err = c.doWrite(nil)
+				if err != nil {
+					c.Close()
+					break writeLoop
+				}
+			}
+		}
+
 		// junk-bytes <- junk-bytes + j
+		c.junkBytes += uint64(j)
 
 		// if DONE-XMITTING then
-		//  reset all variables
-		// else
-		//  if rho-star = NaN then
-		//   rho-star <- INITIAL-RHO
-		//  else if CROSSED-THRESHOLD(real-bytes, junk-bytes) then
-		//   rho-star <- RHO-ESTIMATOR(rho-stats, rho-star)
-		//   rho-stats = 0
+		if isDone {
+			// reset all variables
+			c.realBytes = 0
+			c.junkBytes = 0
+		} else {
+			// if rho-star = NaN then
+			// rho-star <- INITIAL-RHO
+			// else if CROSSED-THRESHOLD(real-bytes, junk-bytes) then
+			// rho-star <- RHO-ESTIMATOR(rho-stats, rho-star)
+			// rho-stats = 0
+		}
+
 		// if m is a time-out (always true in this implementation) then
 		//   rho <- random number in [0, 2 * rho-star]
+
 		// SLEEP(rho)
+		time.Sleep(initialRho) // HACKHACKHACK: Use initialRho for now.
 	}
 	c.Done()
 }
 
+func (c *basketConn) doneXmitting() bool {
+	// The paper specifies this as:
+	//   LENGTH(output-buff) <- 0 &&
+	//   CHANNEL-IDLE(onLoadEvent, last-site-response-time) &&
+	//   (padding-done || CROSSED-THRESHOLD(real-bytes + junk-bytes))
+	//
+	// This is only called if the output-buffer is empty, onLoadEvent and
+	// padding-done are not used in this version of the code.
+
+	c.Lock()
+	defer c.Unlock()
+
+	// CHANNEL-IDLE(onLoadEvent, last-site-response-time)
+	isIdle := time.Now().Sub(c.lastSiteResponseTime) > quietTime
+
+	// CROSSED-THRESHOLD(x)
+	//  return floor(log2(x - PACKET-SIZE)) < floor(log2(x))
+	crossedThresh := crossedThreshold(float64(c.realBytes + c.junkBytes))
+
+	return isIdle && crossedThresh
+}
+
+func crossedThreshold(x float64) bool {
+	// CROSSED-THRESHOLD(x)
+	//  return floor(log2(x - PACKET-SIZE)) < floor(log2(x))
+	if x <= maxPayloadSize {
+		// Should never happen for the "total padding" mode.
+		return false
+	}
+	return math.Floor(math.Log2(x-maxPayloadSize)) < math.Floor(math.Log2(x))
+}
+
 func newBasketConn(c net.Conn, sekrit []byte, isClient bool) (*basketConn, error) {
 	bConn := &basketConn{conn: c, isClient: isClient}
+	bConn.writeChan = make(chan []byte, maxPendingFrames)
 
 	// Derive the session keys.
 	h := hkdf.New(blake256.New, sekrit, nil, nil)
