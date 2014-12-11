@@ -26,6 +26,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	mathRand "math/rand"
 	"net"
 	"sync"
 	"syscall"
@@ -52,7 +53,7 @@ const (
 
 	connectTimeout = 30 * time.Second
 	initialRho     = 1 * time.Millisecond
-	quietTime      = 2 * time.Second
+	quietTime      = 2 * time.Second // XXX: Shorten this?
 )
 
 var ErrCounterWrapped = errors.New("nonce counter wrapped")
@@ -79,6 +80,22 @@ func (e *AcceptError) Timeout() bool {
 func (e *AcceptError) Temporary() bool {
 	return true
 }
+
+type csRandSource struct{}
+
+func (r *csRandSource) Int63() int64 {
+	var src [8]byte
+	if _, err := io.ReadFull(rand.Reader, src[:]); err != nil {
+
+	}
+	v := binary.BigEndian.Uint64(src[:])
+	v &= (1<<63 - 1)
+	return int64(v)
+}
+
+func (r *csRandSource) Seed(int64) {}
+
+var csRand = mathRand.New(&csRandSource{})
 
 // ServerConfig specifies the server connection configuration parameters.
 type ServerConfig struct {
@@ -187,6 +204,7 @@ type basketConn struct {
 	lastSiteResponseTime time.Time
 	realBytes            uint64
 	junkBytes            uint64
+	rhoStar              time.Duration
 }
 
 func (c *basketConn) Read(b []byte) (n int, err error) {
@@ -275,7 +293,6 @@ func (c *basketConn) Write(b []byte) (n int, err error) {
 		c.lastSiteResponseTime = time.Now()
 		c.Unlock()
 	}
-
 	return
 }
 
@@ -411,19 +428,29 @@ writeLoop:
 			// reset all variables
 			c.realBytes = 0
 			c.junkBytes = 0
+			c.rhoStar = 0
+			// rho-stats
 		} else {
-			// if rho-star = NaN then
-			// rho-star <- INITIAL-RHO
-			// else if CROSSED-THRESHOLD(real-bytes, junk-bytes) then
-			// rho-star <- RHO-ESTIMATOR(rho-stats, rho-star)
-			// rho-stats = 0
+			if c.rhoStar == 0 {
+				// if rho-star = NaN then
+				//  rho-star <- INITIAL-RHO
+				c.rhoStar = initialRho
+			} else if crossedThreshold(float64(c.realBytes + c.junkBytes)) {
+				// if CROSSED-THRESHOLD(real-bytes, junk-bytes) then
+				//  rho-star <- RHO-ESTIMATOR(rho-stats, rho-star)
+				//  rho-stats = 0
+			}
 		}
 
 		// if m is a time-out (always true in this implementation) then
 		//   rho <- random number in [0, 2 * rho-star]
+		rho := initialRho // Sigh, make sure that rho is always somewhat sane.
+		if c.rhoStar != 0 {
+			rho = time.Duration(csRand.Int63n(2 * int64(c.rhoStar)))
+		}
 
 		// SLEEP(rho)
-		time.Sleep(initialRho) // HACKHACKHACK: Use initialRho for now.
+		time.Sleep(rho)
 	}
 	c.Done()
 }
@@ -435,7 +462,12 @@ func (c *basketConn) doneXmitting() bool {
 	//   (padding-done || CROSSED-THRESHOLD(real-bytes + junk-bytes))
 	//
 	// This is only called if the output-buffer is empty, onLoadEvent and
-	// padding-done are not used in this version of the code.
+	// padding-done are not used in this version of the code, so things are
+	// simplified somewhat (yay).
+	//
+	// crossedThreshold can be called with just c.realBytes for "payload"
+	// padding, but "total" padding appears to be a better (if more expensive)
+	// defense.  Consider CTSP to cut down on bandwidth consumption.
 
 	c.Lock()
 	defer c.Unlock()
