@@ -39,7 +39,7 @@ import (
 )
 
 const (
-	frameSize      = 1500 - (40 + 12) // XXX: 1498 instead of 1500?
+	frameSize      = 1500 - (14 + 20 + 32) // XXX: 1498 instead of 1500?
 	maxPayloadSize = frameSize - (boxOverhead + 2)
 
 	boxKeySize         = 32
