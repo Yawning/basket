@@ -64,7 +64,6 @@ Notes:
 TODO:
  * Allow specifying the various algorithms via options/bridge line.
  * Allow specifying the AuthKey via options/bridge line.
- * Allow specifying a digest for the server's public key for the first connect.
  * Actually implement CS-BuFLO.
 
 Acknowledgements:
