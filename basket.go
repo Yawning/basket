@@ -210,6 +210,7 @@ type basketConn struct {
 	realBytes            uint64
 	junkBytes            uint64
 	rhoStar              time.Duration
+	rhoStats             statsAccumulator
 }
 
 func (c *basketConn) Read(b []byte) (n int, err error) {
@@ -264,6 +265,7 @@ func (c *basketConn) Read(b []byte) (n int, err error) {
 			c.recvBuf.Write(frame[2 : 2+payloadLen])
 
 			// rho-stats = rho-stats || false
+			c.rhoStats.add(time.Time{})
 			// (onLoadEvent <- 0, padding-done <- 0) - Skipped.
 		}
 	}
@@ -433,6 +435,7 @@ writeLoop:
 
 			// if output-buff is not empty
 			//  rho-stats <- rho-stats || CURRENT-TIME
+			c.rhoStats.add(time.Now())
 
 			// (output-buf, j) <- CS-SEND(s, output-buff)
 			_, j, err = c.doWrite(frame)
@@ -464,7 +467,7 @@ writeLoop:
 			c.realBytes = 0
 			c.junkBytes = 0
 			c.rhoStar = 0
-			// rho-stats
+			c.rhoStats.reset()
 		} else {
 			if c.rhoStar == 0 {
 				// if rho-star = NaN then
@@ -473,7 +476,18 @@ writeLoop:
 			} else if crossedThreshold(float64(c.realBytes + c.junkBytes)) {
 				// if CROSSED-THRESHOLD(real-bytes, junk-bytes) then
 				//  rho-star <- RHO-ESTIMATOR(rho-stats, rho-star)
+				//   I <- [rho-stats i+1 - rho-stats i | rho-stats i+1 != false
+				//        && rho-stats i != false]
+				//   if I = empty list then
+				//     return rho-star
+				//   return 2^(floor(log2(median(I))))
 				//  rho-stats = 0
+				median := c.rhoStats.median()
+				if median != 0 {
+					shift := uint(math.Floor(math.Log2(float64(median))))
+					c.rhoStar = 1 << shift
+				}
+				c.rhoStats.reset()
 			}
 		}
 		doSleep()
