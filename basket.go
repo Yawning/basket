@@ -28,6 +28,7 @@ import (
 	"math"
 	mathRand "math/rand"
 	"net"
+	"os"
 	"sync"
 	"syscall"
 	"time"
@@ -52,8 +53,8 @@ const (
 	boxOverhead        = secretbox.Overhead
 
 	connectTimeout = 30 * time.Second
-	initialRho     = 1 * time.Millisecond
-	quietTime      = 2 * time.Second // XXX: Shorten this?
+	initialRho     = 1 * time.Millisecond // XXX: Lengthen this?
+	quietTime      = 2 * time.Second      // XXX: Shorten this?
 )
 
 var ErrCounterWrapped = errors.New("nonce counter wrapped")
@@ -86,7 +87,7 @@ type csRandSource struct{}
 func (r *csRandSource) Int63() int64 {
 	var src [8]byte
 	if _, err := io.ReadFull(rand.Reader, src[:]); err != nil {
-
+		panic(err)
 	}
 	v := binary.BigEndian.Uint64(src[:])
 	v &= (1<<63 - 1)
@@ -185,7 +186,10 @@ func Listen(network string, laddr *net.TCPAddr, config *ServerConfig) (*basketLi
 type basketConn struct {
 	sync.Mutex
 	sync.WaitGroup
-	conn net.Conn
+
+	fileConn   *os.File
+	localAddr  net.Addr
+	remoteAddr net.Addr
 
 	txBoxKey         [boxKeySize]byte
 	txBoxNoncePrefix [boxNoncePrefixSize]byte
@@ -213,7 +217,7 @@ func (c *basketConn) Read(b []byte) (n int, err error) {
 		// Frame size is constant and hardcoded, so "packets" are just NaCl
 		// secretboxes.
 		var box [frameSize]byte
-		if _, err := io.ReadFull(c.conn, box[:]); err != nil {
+		if _, err := io.ReadFull(c.fileConn, box[:]); err != nil {
 			return 0, err
 		}
 
@@ -317,15 +321,15 @@ func (c *basketConn) Close() error {
 		c.rxBoxKey[i] = 0
 	}
 
-	return c.conn.Close()
+	return c.fileConn.Close()
 }
 
 func (c *basketConn) LocalAddr() net.Addr {
-	return c.conn.LocalAddr()
+	return c.localAddr
 }
 
 func (c *basketConn) RemoteAddr() net.Addr {
-	return c.conn.RemoteAddr()
+	return c.remoteAddr
 }
 
 func (c *basketConn) SetDeadline(t time.Time) error {
@@ -367,7 +371,7 @@ func (c *basketConn) doWrite(b []byte) (n, j int, err error) {
 	box := make([]byte, 0, frameSize)
 	box = secretbox.Seal(box, frame[:], &nonce, &c.txBoxKey)
 
-	if _, err = c.conn.Write(box[:]); err != nil {
+	if _, err = c.fileConn.Write(box[:]); err != nil {
 		// The return value for n here will be inaccurate but failures at
 		// this point are fatal to the calling code so it doesn't matter.
 		return
@@ -392,6 +396,7 @@ writeLoop:
 				// The writeChan is closed.
 				break writeLoop
 			}
+			c.realBytes += uint64(len(frame))
 
 			// log.Printf("scheduling frame xmit: %d bytes", len(frame))
 
@@ -399,7 +404,6 @@ writeLoop:
 			//  rho-stats <- rho-stats || CURRENT-TIME
 
 			// (output-buf, j) <- CS-SEND(s, output-buff)
-			c.realBytes += uint64(len(frame))
 			_, j, err = c.doWrite(frame)
 			if err != nil {
 				// No nice way to pass this back to the caller, so just close
@@ -443,7 +447,7 @@ writeLoop:
 		}
 
 		// if m is a time-out (always true in this implementation) then
-		//   rho <- random number in [0, 2 * rho-star]
+		//  rho <- random number in [0, 2 * rho-star]
 		rho := initialRho // Sigh, make sure that rho is always somewhat sane.
 		if c.rhoStar != 0 {
 			rho = time.Duration(csRand.Int63n(2 * int64(c.rhoStar)))
@@ -493,8 +497,21 @@ func crossedThreshold(x float64) bool {
 }
 
 func newBasketConn(c net.Conn, sekrit []byte, isClient bool) (*basketConn, error) {
-	bConn := &basketConn{conn: c, isClient: isClient}
+	// We need to get at the raw file descriptor.  The Go runtime's idea of a
+	// reasonable way to do this is to use File() which duplicates the
+	// underlying fd, and then call file.Fd().  Naturally the original
+	// net.TCPConn needs to be cleaned up separately.
+	fConn, err := c.(*net.TCPConn).File()
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+
+	bConn := &basketConn{fileConn: fConn, isClient: isClient}
 	bConn.writeChan = make(chan []byte, maxPendingFrames)
+	bConn.localAddr = c.LocalAddr()
+	bConn.remoteAddr = c.RemoteAddr()
+	c.Close() // Everything else can be done via bConn.fileConn.
 
 	// Derive the session keys.
 	h := hkdf.New(blake256.New, sekrit, nil, nil)
@@ -529,8 +546,6 @@ func newBasketConn(c net.Conn, sekrit []byte, isClient bool) (*basketConn, error
 		}
 		bConn.txBoxNonceCtr = 1
 	}
-
-	// Initialize the CS-BuFLO parameters.
 
 	// Start up the CS-BuFLO write worker.
 	bConn.Add(1)
