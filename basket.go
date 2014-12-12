@@ -39,6 +39,7 @@ import (
 	"github.com/dchest/blake256"
 
 	"github.com/yawning/basket/cert"
+	"github.com/yawning/basket/kist"
 )
 
 const (
@@ -380,6 +381,16 @@ func (c *basketConn) doWrite(b []byte) (n, j int, err error) {
 }
 
 func (c *basketConn) writeWorker() {
+	doSleep := func() {
+		// rho <- random number in [0, 2 * rho-star]
+		rho := initialRho // Sigh, make sure that rho is always somewhat sane.
+		if c.rhoStar != 0 {
+			rho = time.Duration(csRand.Int63n(2 * int64(c.rhoStar)))
+		}
+		// SLEEP(rho)
+		time.Sleep(rho)
+	}
+
 	// This is where the magic happens.
 writeLoop:
 	for {
@@ -387,8 +398,24 @@ writeLoop:
 		j := 0
 		isDone := false
 
-		// XXX: Check if network conditions would allow for a frame to be
-		// written.
+		// Check if network conditions would allow for a frame to be
+		// written.  The CS-BuFLO paper does this the absolute garbage way by
+		// setting the socket to non-blocking mode and doing a YOLO write.
+		// Basket does the smart thing and queries the socket information to
+		// see if a Write of the target size will go through without blocking.
+		if cap, err := kist.EstimateWriteCapacity(c.fileConn); err == nil {
+			// Failures are probably catastrophic, but since they are unlikely,
+			// just assume that the link has capacity if we fail to get an
+			// estimate.
+			if cap < frameSize {
+				// Ok, the link is congested either due to insufficient send
+				// socket buffer space (unlikely), or the congestion window
+				// being full (likely).  In either case, sleep for the random
+				// interval and try again.
+				doSleep()
+				continue
+			}
+		}
 
 		select {
 		case frame, ok := <-c.writeChan:
@@ -445,16 +472,7 @@ writeLoop:
 				//  rho-stats = 0
 			}
 		}
-
-		// if m is a time-out (always true in this implementation) then
-		//  rho <- random number in [0, 2 * rho-star]
-		rho := initialRho // Sigh, make sure that rho is always somewhat sane.
-		if c.rhoStar != 0 {
-			rho = time.Duration(csRand.Int63n(2 * int64(c.rhoStar)))
-		}
-
-		// SLEEP(rho)
-		time.Sleep(rho)
+		doSleep()
 	}
 	c.Done()
 }
