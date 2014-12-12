@@ -14,6 +14,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+// Package kist implements the link capacity estimation algorithm from
+// "Never Been KIST: Tor’s Congestion Management Blossoms with Kernel-Informed
+// Socket Transport".
 package kist
 
 import (
@@ -22,6 +25,11 @@ import (
 	"unsafe"
 )
 
+// EstimateWriteCapacity attempts to figure out how much can be written to a
+// given os.File without blocking.  It is assumed that the os.File is actually
+// a TCP socket (since the algorithm queries TCP_INFO), but since the Go
+// runtime doesn't deem users worthy to get at the raw file descriptor, an
+// os.File is used instead.
 func EstimateWriteCapacity(f *os.File) (int, error) {
 	// Estimate the amount of write capacity available on a given connection by
 	// using the algorithm specified in "Never Been KIST: Tor’s Congestion
@@ -36,7 +44,7 @@ func EstimateWriteCapacity(f *os.File) (int, error) {
 
 	// Detemine the total capacity of the send socket buffer "sndbufcap", with
 	// a SO_SNDBUF getsockopt() call, and the current amount of data in the
-	// send socket buffer with a TIOCOUTQ ioctl.
+	// send socket buffer "sndbuflen" with a TIOCOUTQ ioctl.
 	//
 	// NB: SIOCOUTQ is the Linux-ism that is more accurately named, but they
 	// are functionally equivalent.
