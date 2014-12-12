@@ -236,7 +236,11 @@ func (c *basketConn) Read(b []byte) (n int, err error) {
 		frame := make([]byte, 0, frameSize-boxOverhead)
 		frame, ok := secretbox.Open(frame, box[:], &nonce, &c.rxBoxKey)
 		if !ok {
-			// Decrypting failed.
+			// Decrypting failed.  Possible if Close() happens while a Read
+			// call is in progress since the keys get obliterated, which is
+			// harmless if somewhat annoying.  Throwing a lock around the
+			// decrypt would solve that but that's kind of terrible from a
+			// performance standpoint.
 			return 0, ErrDecryptFailed
 		}
 		if len(frame) != frameSize-boxOverhead {
@@ -433,10 +437,9 @@ writeLoop:
 			// (output-buf, j) <- CS-SEND(s, output-buff)
 			_, j, err = c.doWrite(frame)
 			if err != nil {
-				// No nice way to pass this back to the caller, so just close
-				// the connection and bail out.
+				c.Done()
 				c.Close()
-				break writeLoop
+				return
 			}
 		case <-time.After(0):
 			// Meh, the write buffer is empty, check if we should be idle, and
@@ -445,8 +448,9 @@ writeLoop:
 				// log.Print("scheduling padding xmit")
 				_, j, err = c.doWrite(nil)
 				if err != nil {
+					c.Done()
 					c.Close()
-					break writeLoop
+					return
 				}
 			}
 		}
