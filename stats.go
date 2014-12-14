@@ -22,6 +22,10 @@ import (
 	"time"
 )
 
+const (
+	maxObservations = 1024 // Must be a power of 2.
+)
+
 type durationSlice []time.Duration
 
 func (d durationSlice) Len() int {
@@ -39,8 +43,9 @@ func (d durationSlice) Swap(i, j int) {
 type statsAccumulator struct {
 	sync.Mutex
 
-	lastT     time.Time
-	intervals durationSlice
+	lastT       time.Time
+	intervals   durationSlice
+	intervalIdx int
 }
 
 func (a *statsAccumulator) reset() {
@@ -49,12 +54,17 @@ func (a *statsAccumulator) reset() {
 
 	a.lastT = time.Time{}
 	a.intervals = a.intervals[:0]
+	a.intervalIdx = 0
 }
 
 func (a *statsAccumulator) add(t time.Time) {
 	var zeroTime time.Time
 	a.Lock()
 	defer a.Unlock()
+
+	if a.intervals == nil {
+		a.intervals = make(durationSlice, 0, maxObservations)
+	}
 
 	// The CS-BuFLO rho-stats accumulator collects inter-packet intervals with
 	// the goal of determining the median whenever an update to rho-star is
@@ -64,10 +74,6 @@ func (a *statsAccumulator) add(t time.Time) {
 	// Since storing the actual times is not needed to calculate the list of
 	// intervals, calculate the interval to be added as a sample each time a
 	// non-false value is inserted.
-	//
-	// Additionally since the list of intervals can grow to be rather large,
-	// instead of calculating the true median (which requires storing every
-	// single value), use an approximation.
 	if t != zeroTime {
 		// Ok, there was a previous timestamp recorded, and we have another
 		// timestamp.  Derive the interval and factor it into the interval
@@ -75,9 +81,16 @@ func (a *statsAccumulator) add(t time.Time) {
 		// for backward jumps in time here, and recover on the next sample.
 		if a.lastT != zeroTime && t.After(a.lastT) {
 			interval := t.Sub(a.lastT)
-
-			// TODO: Use a huristic here instead of calculating the true median.
-			a.intervals = append(a.intervals, interval)
+			if a.intervals.Len() < maxObservations {
+				a.intervals = append(a.intervals, interval)
+			} else {
+				// Limit the list of intervals to something sane, and replace
+				// the oldest observed value.  This only kicks in once the
+				// backing store has been filled once, so the eldest at that
+				// point is the 0th element.
+				a.intervalIdx = (a.intervalIdx + 1) & (maxObservations - 1)
+				a.intervals[a.intervalIdx] = interval
+			}
 		}
 	}
 	a.lastT = t
@@ -88,13 +101,15 @@ func (a *statsAccumulator) median() time.Duration {
 	defer a.Unlock()
 
 	// Return a 0 duration for the empty list case.
-	if len(a.intervals) == 0 {
+	if a.intervals.Len() == 0 {
 		return time.Duration(0)
 	}
 
-	// TODO: Use a huristic instead of calculating the true median.
-	sort.Sort(a.intervals)
-	return a.intervals[len(a.intervals)/2]
+	// Work on a copy of the interval list, so the aging works correctly.
+	tmp := make(durationSlice, a.intervals.Len())
+	copy(tmp, a.intervals)
+	sort.Sort(tmp)
+	return tmp[tmp.Len()/2]
 }
 
 var _ sort.Interface = (*durationSlice)(nil)
