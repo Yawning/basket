@@ -53,6 +53,11 @@ WARNINGS:
  * This is experimental and should not be used by anybody.
 
 Notes:
+ * Go 1.4 and recent versions of go.crypto break the build.  Due to
+   requirements for other projects, development is currently done with Go
+   1.3.3 and go.crypto 231:7ad4bae3f467.  If you are building on Go 1.4 or
+   with a newer version of go.crypto, you will need to change the go.crypto
+   include paths to "golang.org/x/crypto".
  * I'll document the protocol when I get around to it, in the meanwhile read
    the code.
  * Pulling out the TCP/IP state via getsockopt is non-portable and requires
