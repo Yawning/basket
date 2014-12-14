@@ -55,7 +55,8 @@ const (
 
 	connectTimeout = 30 * time.Second
 	initialRho     = 1 * time.Millisecond // XXX: Lengthen this?
-	quietTime      = 2 * time.Second      // XXX: Shorten this?
+	upperRho       = 4 * time.Millisecond
+	quietTime      = 2 * time.Second // XXX: Shorten this?
 )
 
 var ErrCounterWrapped = errors.New("nonce counter wrapped")
@@ -431,8 +432,6 @@ writeLoop:
 			}
 			c.realBytes += uint64(len(frame))
 
-			// log.Printf("scheduling frame xmit: %d bytes", len(frame))
-
 			// if output-buff is not empty
 			//  rho-stats <- rho-stats || CURRENT-TIME
 			c.rhoStats.add(time.Now())
@@ -448,7 +447,6 @@ writeLoop:
 			// Meh, the write buffer is empty, check if we should be idle, and
 			// if not inject some padding.
 			if isDone = c.doneXmitting(); !isDone {
-				// log.Print("scheduling padding xmit")
 				_, j, err = c.doWrite(nil)
 				if err != nil {
 					c.Done()
@@ -466,7 +464,7 @@ writeLoop:
 			// reset all variables
 			c.realBytes = 0
 			c.junkBytes = 0
-			c.rhoStar = 0
+			c.rhoStar = initialRho // Paper says 0, but want a sane value.
 			c.rhoStats.reset()
 		} else {
 			if c.rhoStar == 0 {
@@ -483,9 +481,19 @@ writeLoop:
 				//   return 2^(floor(log2(median(I))))
 				//  rho-stats = 0
 				median := c.rhoStats.median()
-				if median != 0 {
+				if median == 0 {
+					c.rhoStar = upperRho
+				} else {
 					shift := uint(math.Floor(math.Log2(float64(median))))
 					c.rhoStar = 1 << shift
+
+					// XXX: The implementation by the authors caps "tau"
+					// (called rho in the paper) to upperRho.  I think this
+					// wastes bandwidth, but allowing rho to grow too large
+					// adds a lot of latency.
+					if c.rhoStar > upperRho {
+						c.rhoStar = upperRho
+					}
 				}
 				c.rhoStats.reset()
 			}
