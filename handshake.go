@@ -23,6 +23,7 @@ import (
 	"errors"
 	"io"
 	"strconv"
+	"time"
 
 	"github.com/dchest/blake256"
 
@@ -41,9 +42,9 @@ const (
 	ntruCiphertextSize = 1611
 )
 
-var ErrInvalidHandshakeRequest = errors.New("basket: invalid handshakeRequest")
-var ErrInvalidHandshakeResponse = errors.New("basket: invalid handshakeResponse")
-var ErrInvalidSignature = errors.New("basket: invalid signature")
+var ErrInvalidHandshakeRequest = errors.New("invalid handshakeRequest")
+var ErrInvalidHandshakeResponse = errors.New("invalid handshakeResponse")
+var ErrInvalidSignature = errors.New("invalid signature")
 
 // HandshakeMethod specifies the key exchange algorithm to use.
 type HandshakeMethod byte
@@ -63,7 +64,18 @@ type InvalidHandshakeMethodError HandshakeMethod
 
 func (m InvalidHandshakeMethodError) Error() string {
 	me := uint64(m)
-	return "basket: unsupported handshake method: " + strconv.FormatUint(me, 10)
+	return "unsupported handshake method: " + strconv.FormatUint(me, 10)
+}
+
+func epochHour() uint32 {
+	return uint32(time.Now().Unix() / (60 * 60))
+}
+
+func tweakAuthKey(authKey []byte, epochHour uint32) []byte {
+	tweaked := make([]byte, len(authKey)+4)
+	copy(tweaked, authKey)
+	binary.BigEndian.PutUint32(tweaked[len(authKey):], epochHour)
+	return tweaked
 }
 
 type handshakeRequest struct {
@@ -118,10 +130,20 @@ func handshakeRequestFromBytes(raw []byte, authKey []byte) (*handshakeRequest, e
 	if authKey != nil {
 		// If there is an authKey set, actually validate the auth_digest value,
 		// otherwise ignore it.
-		m := hmac.New(blake256.New, authKey)
-		m.Write(raw[0 : len(raw)-len(p)])
-		calcAuth := m.Sum(nil)
-		if !hmac.Equal(calcAuth, req.authDigest) {
+		authOk := false
+		epochHour := epochHour()
+		epochHours := []uint32{epochHour, epochHour - 1, epochHour + 1}
+		for _, e := range epochHours {
+			tweakedKey := tweakAuthKey(authKey, e)
+			m := hmac.New(blake256.New, tweakedKey)
+			m.Write(raw[0 : len(raw)-len(p)])
+			calcAuth := m.Sum(nil)
+			if hmac.Equal(calcAuth, req.authDigest) {
+				// TODO: Do replay detection.
+				authOk = true
+			}
+		}
+		if !authOk {
 			return nil, ErrInvalidHandshakeRequest
 		}
 	}
@@ -150,10 +172,10 @@ func (ch *clientHandshake) onHandshakeResponse(resp *handshakeResponse) (err err
 	// validated before this, the rest is handled here.
 
 	if ch.req.method != resp.method {
-		return errors.New("basket: response method != request method")
+		return errors.New("response method != request method")
 	}
 	if subtle.ConstantTimeCompare(ch.req.digest, resp.reqDigest) != 1 {
-		return errors.New("basket: response request digest != request digest")
+		return errors.New("response request digest != request digest")
 	}
 	if ch.req.method == HandshakeNTRU {
 		// All the attacks that can happen vs the RSA based TLS key exchange
@@ -168,7 +190,7 @@ func (ch *clientHandshake) onHandshakeResponse(resp *handshakeResponse) (err err
 			return err
 		}
 		if len(pt) != kex.PublicKeySize {
-			return errors.New("basket: response NTRU plaintext not a Curve25519 key")
+			return errors.New("response NTRU plaintext not a Curve25519 key")
 		}
 		resp.kexPublic, _ = kex.NewPublicKey(pt)
 		ch.ntruPrivate.F.Obliterate()
@@ -223,7 +245,7 @@ func newClientHandshake(random io.Reader, method HandshakeMethod, authKey []byte
 		rawReq = append(rawReq, req.ntruPublic.Bytes()...)
 	}
 	if authKey != nil {
-		m := hmac.New(blake256.New, authKey)
+		m := hmac.New(blake256.New, tweakAuthKey(authKey, epochHour()))
 		m.Write(rawReq)
 		req.authDigest = m.Sum(nil)
 	} else {
