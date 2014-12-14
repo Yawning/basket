@@ -44,7 +44,7 @@ import (
 
 const (
 	frameSize      = 1500 - (14 + 20 + 32) // XXX: 1498 instead of 1500?
-	maxPayloadSize = frameSize - (boxOverhead + 2)
+	maxPayloadSize = frameSize - (boxOverhead + 2) // ->543 bytes?
 
 	maxPendingFrames = 64
 
@@ -523,9 +523,14 @@ func (c *basketConn) doneXmitting() bool {
 	// CHANNEL-IDLE(onLoadEvent, last-site-response-time)
 	isIdle := time.Now().Sub(c.lastSiteResponseTime) > quietTime
 
+	x := float64(c.realBytes + c.junkBytes)
+	if x == 0 {
+		return isIdle
+	}
+
 	// CROSSED-THRESHOLD(x)
 	//  return floor(log2(x - PACKET-SIZE)) < floor(log2(x))
-	crossedThresh := crossedThreshold(float64(c.realBytes + c.junkBytes))
+	crossedThresh := crossedThreshold(x)
 
 	return isIdle && crossedThresh
 }
