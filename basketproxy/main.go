@@ -17,6 +17,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -50,7 +51,8 @@ const (
 	ptServerCert = "basket_server.b64"
 	ptKnownHosts = "basket_known_hosts"
 
-	digestArg = "digest"
+	digestArg  = "digest"
+	authKeyArg = "authKey"
 )
 
 func infof(format string, a ...interface{}) {
@@ -133,8 +135,18 @@ func clientHandler(socksConn *pt.SocksConn) {
 		}
 	}
 
-	// TODO: Pull out the handshake method/auth key from the args.
-	cfg := &basket.ClientConfig{Method: basket.HandshakeNTRU, CertCheckFn: checkServerCert}
+	// Optionally authenticate with the server.
+	var authKey []byte
+	if authKeyStr, ok := socksConn.Req.Args.Get(authKeyArg); ok {
+		if authKey, err = hex.DecodeString(authKeyStr); err != nil {
+			warnf("invalid authKey: %s", err)
+			socksConn.Reject()
+			return
+		}
+	}
+
+	// TODO: Pull out the handshake method from the args.
+	cfg := &basket.ClientConfig{Method: basket.HandshakeNTRU, CertCheckFn: checkServerCert, AuthKey: authKey}
 	basketConn, err := basket.Dial("tcp", tAddr, cfg)
 	if err != nil {
 		warnf("basket.Dial() failed: %s", err)
@@ -337,9 +349,17 @@ func main() {
 					continue
 				}
 				infof("Server Cert: %s", serverCert.String())
-				// TODO: Pull the AuthKey out of the args if applicable.
 
-				cfg := &basket.ServerConfig{ServerCert: serverCert}
+				var authKey []byte
+				if authKeyStr, ok := bindaddr.Options.Get(authKeyArg); ok {
+					if authKey, err = hex.DecodeString(authKeyStr); err != nil {
+						errorf("invalid authKey: %s", err)
+						pt.SmethodError(methodName, err.Error())
+						continue
+					}
+				}
+
+				cfg := &basket.ServerConfig{ServerCert: serverCert, AuthKey: authKey}
 				ln, err := basket.Listen("tcp", bindaddr.Addr, cfg)
 				if err != nil {
 					// XXX: Log
@@ -354,6 +374,7 @@ func main() {
 				}
 
 				go serverAcceptLoop(ln, &ptInfo)
+				// TODO: Publish the authKey and digest to BridgeDB.
 				pt.SmethodArgs(methodName, ln.Addr(), nil)
 				listeners = append(listeners, ln)
 			default:

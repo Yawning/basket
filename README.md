@@ -68,7 +68,8 @@ Notes:
 
 TODO:
  * Allow specifying the various algorithms via options/bridge line.
- * Allow specifying the AuthKey via options/bridge line.
+ * Add a replay detection filter for handshakeRequests.
+ * Clean up logging.
 
 Acknowledgements:
  * Thanks to Marc Juarez (KU Leuven) and Mike Perry, who provided inspiration
