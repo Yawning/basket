@@ -128,8 +128,7 @@ func handshakeRequestFromBytes(raw []byte, authKey []byte) (*handshakeRequest, e
 	// uint8_t  auth_digest[32] (shared secret)
 	req.authDigest = p
 	if authKey != nil {
-		// If there is an authKey set, actually validate the auth_digest value,
-		// otherwise ignore it.
+		// If there is an authKey set, actually validate the auth_digest value.
 		authOk := false
 		epochHour := epochHour()
 		epochHours := []uint32{epochHour, epochHour - 1, epochHour + 1}
@@ -144,6 +143,18 @@ func handshakeRequestFromBytes(raw []byte, authKey []byte) (*handshakeRequest, e
 			}
 		}
 		if !authOk {
+			return nil, ErrInvalidHandshakeRequest
+		}
+	} else {
+		// Ensure that the client isn't trying to authenticate when there is no
+		// authKey set.  Technically speaking there isn't any reason why this
+		// couldn't be allowed, but I don't feel great about signing random
+		// garbage that the client sent, even if it is after being digested.
+		var tmp byte
+		for _, x := range req.authDigest[:blake256.Size] {
+			tmp |= x
+		}
+		if tmp != 0 {
 			return nil, ErrInvalidHandshakeRequest
 		}
 	}
