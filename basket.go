@@ -546,11 +546,14 @@ func crossedThreshold(x float64) bool {
 }
 
 func newBasketConn(c net.Conn, sekrit []byte, isClient bool) (*basketConn, error) {
+	tConn := c.(*net.TCPConn)
+	tConn.SetNoDelay(true)
+
 	// We need to get at the raw file descriptor.  The Go runtime's idea of a
 	// reasonable way to do this is to use File() which duplicates the
 	// underlying fd, and then call file.Fd().  Naturally the original
 	// net.TCPConn needs to be cleaned up separately.
-	fConn, err := c.(*net.TCPConn).File()
+	fConn, err := tConn.File()
 	if err != nil {
 		c.Close()
 		return nil, err
