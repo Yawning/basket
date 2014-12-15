@@ -392,7 +392,7 @@ func (c *basketConn) writeWorker() {
 
 	doSleep := func() {
 		// rho <- random number in [0, 2 * rho-star]
-		rho := initialRho // Sigh, make sure that rho is always somewhat sane.
+		rho := upperRho // Sigh, make sure that rho is always somewhat sane.
 		if c.rhoStar != 0 {
 			rho = time.Duration(csRand.Int63n(2 * int64(c.rhoStar)))
 		}
@@ -401,11 +401,11 @@ func (c *basketConn) writeWorker() {
 	}
 
 	// This is where the magic happens.
+	var frame []byte
+	ok := true
 writeLoop:
 	for {
 		var err error
-		var frame []byte
-		ok := false
 		isDone := false
 		j := 0
 
@@ -428,13 +428,23 @@ writeLoop:
 			}
 		}
 
-		if isTxIdle {
+		if frame != nil {
+			// This the channel read from isTxIdle unblocking.  We already have
+			// a frame from the previous read, and were just interested in
+			// making sure that KIST thinks we can still send.
+		} else if isTxIdle {
 			// If the write worker state is idle, that means that we have
 			// finished transmitting the payload + cover traffic associated
 			// with a given write.  Since polling the write channel every sleep
 			// interval wastes CPU, just block until the next chunk of user
 			// payload is available.
+			//
+			// It is possible but extremely unlikely for the KIST
+			// scheduler's data to be totally wrong when this finally unblocks,
+			// since the code does the KIST check then blocks waiting on user
+			// payload, so re-enter the loop after a frame has been obtained.
 			frame, ok = <-c.writeChan
+			continue
 		} else {
 			// We are in the middle of processing a burst (including the
 			// associated cover traffic).  If there is no payload available
@@ -477,6 +487,7 @@ writeLoop:
 				c.Close()
 				return
 			}
+			frame = nil
 		}
 
 		// junk-bytes <- junk-bytes + j
