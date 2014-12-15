@@ -43,7 +43,7 @@ import (
 )
 
 const (
-	frameSize      = 1500 - (14 + 20 + 32) // XXX: 1498 instead of 1500?
+	frameSize      = 1500 - (14 + 20 + 32)         // XXX: 1498 instead of 1500?
 	maxPayloadSize = frameSize - (boxOverhead + 2) // ->543 bytes?
 
 	maxPendingFrames = 64
@@ -388,6 +388,8 @@ func (c *basketConn) doWrite(b []byte) (n, j int, err error) {
 }
 
 func (c *basketConn) writeWorker() {
+	isTxIdle := true
+
 	doSleep := func() {
 		// rho <- random number in [0, 2 * rho-star]
 		rho := initialRho // Sigh, make sure that rho is always somewhat sane.
@@ -402,8 +404,10 @@ func (c *basketConn) writeWorker() {
 writeLoop:
 	for {
 		var err error
-		j := 0
+		var frame []byte
+		ok := false
 		isDone := false
+		j := 0
 
 		// Check if network conditions would allow for a frame to be
 		// written.  The CS-BuFLO paper does this the absolute garbage way by
@@ -424,12 +428,42 @@ writeLoop:
 			}
 		}
 
-		select {
-		case frame, ok := <-c.writeChan:
-			if !ok {
-				// The writeChan is closed.
-				break writeLoop
+		if isTxIdle {
+			// If the write worker state is idle, that means that we have
+			// finished transmitting the payload + cover traffic associated
+			// with a given write.  Since polling the write channel every sleep
+			// interval wastes CPU, just block until the next chunk of user
+			// payload is available.
+			frame, ok = <-c.writeChan
+		} else {
+			// We are in the middle of processing a burst (including the
+			// associated cover traffic).  If there is no payload available
+			// this means that cover traffic should be sent instead, so timeout
+			// immediately if the write channel is empty.
+			select {
+			case frame, ok = <-c.writeChan:
+				// Handled after the if.
+			case <-time.After(0):
+				// Write buffer is empty, check if we should idle, and if not,
+				// inject padding.
+				if isDone = c.doneXmitting(); !isDone {
+					_, j, err = c.doWrite(nil)
+					if err != nil {
+						c.Done()
+						c.Close()
+						return
+					}
+				}
+				ok = true
 			}
+		}
+		if !ok {
+			// c.writeChan is closed.
+			break writeLoop
+		}
+		if frame != nil {
+			// There is payload to send.
+			isTxIdle = false
 			c.realBytes += uint64(len(frame))
 
 			// if output-buff is not empty
@@ -443,17 +477,6 @@ writeLoop:
 				c.Close()
 				return
 			}
-		case <-time.After(0):
-			// Meh, the write buffer is empty, check if we should be idle, and
-			// if not inject some padding.
-			if isDone = c.doneXmitting(); !isDone {
-				_, j, err = c.doWrite(nil)
-				if err != nil {
-					c.Done()
-					c.Close()
-					return
-				}
-			}
 		}
 
 		// junk-bytes <- junk-bytes + j
@@ -462,6 +485,7 @@ writeLoop:
 		// if DONE-XMITTING then
 		if isDone {
 			// reset all variables
+			isTxIdle = true
 			c.realBytes = 0
 			c.junkBytes = 0
 			c.rhoStar = initialRho // Paper says 0, but want a sane value.
