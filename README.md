@@ -52,6 +52,22 @@ WARNINGS:
    since the transmission rate will adapt to link conditions.
  * This is experimental and should not be used by anybody.
 
+Running:
+ * Client side arguments are passed in on the Bridge line.
+   * 'authKey=[hexdecimal authentication key]' - Optional client/server shared
+     secret.
+   * 'digest=[algorithmID:public key hash]' - Optional hash of the server's
+     signing key, for the first handshake.
+   * 'hsMethod=[0: Curve25519, 1: NTRUEncrypt + Curve25519]' - Optional
+     handshake key exchange algorithm specifier (Default is NTRUEncrypt +
+     Curve25519).
+ * Server side arguments are passed in via a "ServerTransportOptions"
+   directive.
+   * 'authKey=[hexdecimal authentication key]' - Optional client/server shared
+     secret.
+   * 'signAlg=[0: Ed25519, 1: SPHINCS256' - Optional server signature
+     algorithm specifier (Default is SPHINCS256).
+
 Notes:
  * The Go developers moved go.crypto from code.google.com/p/go.crypto to
    golang.org/x/crypto.  For a while go.crypto was broken on Go 1.3.x, and it
@@ -68,7 +84,6 @@ Notes:
    rather than a technical one.
 
 TODO:
- * Allow specifying the various algorithms via options/bridge line.
  * Clean up logging.
 
 Acknowledgements:

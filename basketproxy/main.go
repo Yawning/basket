@@ -51,8 +51,10 @@ const (
 	ptServerCert = "basket_server.b64"
 	ptKnownHosts = "basket_known_hosts"
 
-	digestArg  = "digest"
-	authKeyArg = "authKey"
+	digestArg   = "digest"
+	authKeyArg  = "authKey"
+	hsMethodArg = "hsMethod"
+	signArg     = "signAlg"
 )
 
 func infof(format string, a ...interface{}) {
@@ -135,6 +137,17 @@ func clientHandler(socksConn *pt.SocksConn) {
 		}
 	}
 
+	// Optionally use the user specified handshake method.
+	hsMethod := basket.HandshakeNTRU
+	if hsMethodStr, ok := socksConn.Req.Args.Get(hsMethodArg); ok {
+		hsMethod, err = basket.HandshakeMethodFromString(hsMethodStr)
+		if err != nil {
+			warnf("invalid hsMethod: %s", err)
+			socksConn.Reject()
+			return
+		}
+	}
+
 	// Optionally authenticate with the server.
 	var authKey []byte
 	if authKeyStr, ok := socksConn.Req.Args.Get(authKeyArg); ok {
@@ -145,8 +158,7 @@ func clientHandler(socksConn *pt.SocksConn) {
 		}
 	}
 
-	// TODO: Pull out the handshake method from the args.
-	cfg := &basket.ClientConfig{Method: basket.HandshakeNTRU, CertCheckFn: checkServerCert, AuthKey: authKey}
+	cfg := &basket.ClientConfig{Method: hsMethod, CertCheckFn: checkServerCert, AuthKey: authKey}
 	basketConn, err := basket.Dial("tcp", tAddr, cfg)
 	if err != nil {
 		warnf("basket.Dial() failed: %s", err)
@@ -341,8 +353,21 @@ func main() {
 			methodName := bindaddr.MethodName
 			switch methodName {
 			case ptMethodName:
-				// TODO: Allow the user to specify the algorithm.
-				serverCert, err := loadOrGenerateCert(path.Join(stateDir, ptServerCert), cert.AlgSphincs256)
+				// If the user felt like specifying a signature algorithm,
+				// honor their decision.
+				signAlg := cert.AlgSphincs256
+				if signStr, ok := bindaddr.Options.Get(signArg); ok {
+					signAlg, err = cert.CertificateAlgorithmFromString(signStr)
+					if err != nil {
+						errorf("invalid signAlg: %s", err)
+						pt.SmethodError(methodName, err.Error())
+						continue
+					}
+				}
+
+				// Load an existing signing key if one exists, and if not,
+				// generate a new one.
+				serverCert, err := loadOrGenerateCert(path.Join(stateDir, ptServerCert), signAlg)
 				if err != nil {
 					errorf("loadOrGenerateCert() failed: %s", err)
 					pt.SmethodError(methodName, err.Error())

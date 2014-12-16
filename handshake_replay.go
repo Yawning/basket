@@ -23,7 +23,7 @@ import (
 const replayMaxEntries = 200000
 
 type replayMap struct {
-	epochHour uint32
+	epochHour   uint32
 	authDigests map[[blake256.Size]byte]bool
 }
 
@@ -44,7 +44,7 @@ func (r *handshakeReplay) ageMaps() {
 	// Age the old entries if neccecary.
 	now := epochHour()
 	newMaps := make([]*replayMap, 0, 3)
-	for _, e := range []uint32{now -1, now, now + 1} {
+	for _, e := range []uint32{now - 1, now, now + 1} {
 		if m := r.getMap(e); m != nil {
 			newMaps = append(newMaps, m)
 		}

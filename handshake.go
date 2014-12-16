@@ -58,6 +58,24 @@ const (
 	HandshakeNTRU
 )
 
+// HandshakeMethodFromString returns a HandshakeMethod given a string
+// representation of the byte value of the method.
+func HandshakeMethodFromString(methodStr string) (HandshakeMethod, error) {
+	methodInt, err := strconv.ParseUint(methodStr, 10, 8)
+	if err != nil {
+		return 0, err
+	}
+
+	method := HandshakeMethod(methodInt)
+	switch method {
+	case HandshakeCurve25519:
+	case HandshakeNTRU:
+	default:
+		return 0, InvalidHandshakeMethodError(method)
+	}
+	return method, nil
+}
+
 // InvalidHandshakeMethodError is the error returned when the handshake method
 // is invalid.
 type InvalidHandshakeMethodError HandshakeMethod

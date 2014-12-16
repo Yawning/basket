@@ -59,6 +59,24 @@ const (
 	AlgSphincs256
 )
 
+// CertificateAlgorithmFromString returns a CertificateAlgorithm given a string
+// representation of the byte value of the algorithm.
+func CertificateAlgorithmFromString(algStr string) (CertificateAlgorithm, error) {
+	algInt, err := strconv.ParseUint(algStr, 10, 8)
+	if err != nil {
+		return 0, err
+	}
+
+	alg := CertificateAlgorithm(algInt)
+	switch alg {
+	case AlgEd25519:
+	case AlgSphincs256:
+	default:
+		return 0, UnsupportedAlgorithmError(alg)
+	}
+	return alg, nil
+}
+
 // Certificate is the common interface supported by all certificate types.
 type Certificate interface {
 	// Algorithm returns the algorithm supported by this certificate.

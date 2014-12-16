@@ -56,6 +56,9 @@ func loadOrGenerateCert(certFile string, alg cert.CertificateAlgorithm) (cert.Ce
 		if err != nil {
 			return nil, err
 		}
+		if cert.Algorithm() != alg {
+			return nil, errors.New("basketproxy: existing certificate algorithm does not match requested")
+		}
 		if !cert.HasPrivateKey() {
 			return nil, errors.New("basketproxy: stored cert missing private key")
 		}
