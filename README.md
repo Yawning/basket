@@ -69,7 +69,6 @@ Notes:
 
 TODO:
  * Allow specifying the various algorithms via options/bridge line.
- * Add a replay detection filter for handshakeRequests.
  * Clean up logging.
 
 Acknowledgements:

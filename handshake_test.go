@@ -34,7 +34,7 @@ func TestHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := handshakeRequestFromBytes(ch.reqBlob, nil)
+	req, err := handshakeRequestFromBytes(ch.reqBlob, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,6 +57,7 @@ func TestHandshake(t *testing.T) {
 
 	// SPHINCS256/NTRU (Test shared secret auth here as well).
 	authKey := []byte("alea iacta est")
+	replayFilter := &handshakeReplay{}
 	c, err = cert.New(cert.AlgSphincs256)
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +66,7 @@ func TestHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err = handshakeRequestFromBytes(ch.reqBlob, authKey)
+	req, err = handshakeRequestFromBytes(ch.reqBlob, replayFilter, authKey)
 	if err != nil {
 		t.Fatal(err)
 	}

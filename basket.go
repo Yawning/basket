@@ -114,6 +114,8 @@ type basketListener struct {
 
 	serverCert cert.Certificate
 	authKey    []byte
+
+	replayFilter handshakeReplay
 }
 
 func (l *basketListener) Accept() (c net.Conn, err error) {
@@ -137,7 +139,7 @@ func (l *basketListener) Accept() (c net.Conn, err error) {
 		c.Close()
 		return nil, &AcceptError{err}
 	}
-	req, err := handshakeRequestFromBytes(rawReq, l.authKey)
+	req, err := handshakeRequestFromBytes(rawReq, &l.replayFilter, l.authKey)
 	if err != nil {
 		c.Close()
 		return nil, &AcceptError{err}
@@ -310,12 +312,12 @@ func (c *basketConn) Write(b []byte) (n int, err error) {
 
 func (c *basketConn) Close() error {
 	c.Lock()
-	defer c.Unlock()
-
 	if c.isClosed {
+		c.Unlock()
 		return syscall.EBADF
 	}
 	c.isClosed = true
+	c.Unlock()
 
 	// Tear down the CS-BuFLO related things.
 	close(c.writeChan)

@@ -87,7 +87,7 @@ type handshakeRequest struct {
 	digest []byte
 }
 
-func handshakeRequestFromBytes(raw []byte, authKey []byte) (*handshakeRequest, error) {
+func handshakeRequestFromBytes(raw []byte, replayFilter *handshakeReplay, authKey []byte) (*handshakeRequest, error) {
 	if len(raw) < 1+kex.PublicKeySize+blake256.Size || len(raw) > maxHandshakeRequestSize {
 		return nil, ErrInvalidHandshakeRequest
 	}
@@ -138,8 +138,11 @@ func handshakeRequestFromBytes(raw []byte, authKey []byte) (*handshakeRequest, e
 			m.Write(raw[0 : len(raw)-len(p)])
 			calcAuth := m.Sum(nil)
 			if hmac.Equal(calcAuth, req.authDigest) {
-				// TODO: Do replay detection.
-				authOk = true
+				if replayFilter != nil {
+					authOk = !replayFilter.testAndSet(e, req.authDigest)
+				} else {
+					authOk = true
+				}
 			}
 		}
 		if !authOk {
