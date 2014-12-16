@@ -236,7 +236,8 @@ func serverAcceptLoop(ln net.Listener, info *pt.ServerInfo) error {
 	}
 }
 
-func serverHandler(basketConn net.Conn, info *pt.ServerInfo) {
+func serverHandler(c net.Conn, info *pt.ServerInfo) {
+	basketConn := c.(*basket.BasketConn)
 	addrStr := elideAddr(basketConn.RemoteAddr().String())
 	infof("%s: new connection", addrStr)
 

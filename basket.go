@@ -187,7 +187,8 @@ func Listen(network string, laddr *net.TCPAddr, config *ServerConfig) (*basketLi
 	return &basketListener{ln: l, serverCert: config.ServerCert, authKey: config.AuthKey}, nil
 }
 
-type basketConn struct {
+// BasketConn is the basket net.Conn data type.
+type BasketConn struct {
 	sync.Mutex
 	sync.WaitGroup
 
@@ -216,7 +217,7 @@ type basketConn struct {
 	rhoStats             statsAccumulator
 }
 
-func (c *basketConn) Read(b []byte) (n int, err error) {
+func (c *BasketConn) Read(b []byte) (n int, err error) {
 	// Read off the network.  Note that this reads at least one single frame.
 	for c.recvBuf.Len() == 0 {
 		// Frame size is constant and hardcoded, so "packets" are just NaCl
@@ -275,7 +276,7 @@ func (c *basketConn) Read(b []byte) (n int, err error) {
 	return c.recvBuf.Read(b)
 }
 
-func (c *basketConn) Write(b []byte) (n int, err error) {
+func (c *BasketConn) Write(b []byte) (n int, err error) {
 	defer func() {
 		// If this gets triggered, it because we tried to write to the closed
 		// writeChan.
@@ -310,7 +311,7 @@ func (c *basketConn) Write(b []byte) (n int, err error) {
 	return
 }
 
-func (c *basketConn) Close() error {
+func (c *BasketConn) Close() error {
 	c.Lock()
 	if c.isClosed {
 		c.Unlock()
@@ -334,27 +335,27 @@ func (c *basketConn) Close() error {
 	return c.fileConn.Close()
 }
 
-func (c *basketConn) LocalAddr() net.Addr {
+func (c *BasketConn) LocalAddr() net.Addr {
 	return c.localAddr
 }
 
-func (c *basketConn) RemoteAddr() net.Addr {
+func (c *BasketConn) RemoteAddr() net.Addr {
 	return c.remoteAddr
 }
 
-func (c *basketConn) SetDeadline(t time.Time) error {
+func (c *BasketConn) SetDeadline(t time.Time) error {
 	return syscall.ENOTSUP
 }
 
-func (c *basketConn) SetReadDeadline(t time.Time) error {
+func (c *BasketConn) SetReadDeadline(t time.Time) error {
 	return syscall.ENOTSUP
 }
 
-func (c *basketConn) SetWriteDeadline(t time.Time) error {
+func (c *BasketConn) SetWriteDeadline(t time.Time) error {
 	return syscall.ENOTSUP
 }
 
-func (c *basketConn) doWrite(b []byte) (n, j int, err error) {
+func (c *BasketConn) doWrite(b []byte) (n, j int, err error) {
 	if b != nil && len(b) > maxPayloadSize {
 		panic("doWrite(): len(b) > maxPayloadSize")
 	}
@@ -389,7 +390,7 @@ func (c *basketConn) doWrite(b []byte) (n, j int, err error) {
 	return bLen, maxPayloadSize - bLen, nil
 }
 
-func (c *basketConn) writeWorker() {
+func (c *BasketConn) writeWorker() {
 	isTxIdle := true
 
 	doSleep := func() {
@@ -539,7 +540,7 @@ writeLoop:
 	c.Done()
 }
 
-func (c *basketConn) doneXmitting() bool {
+func (c *BasketConn) doneXmitting() bool {
 	// The paper specifies this as:
 	//   LENGTH(output-buff) <- 0 &&
 	//   CHANNEL-IDLE(onLoadEvent, last-site-response-time) &&
@@ -581,7 +582,7 @@ func crossedThreshold(x float64) bool {
 	return math.Floor(math.Log2(x-maxPayloadSize)) < math.Floor(math.Log2(x))
 }
 
-func newBasketConn(c net.Conn, sekrit []byte, isClient bool) (*basketConn, error) {
+func newBasketConn(c net.Conn, sekrit []byte, isClient bool) (*BasketConn, error) {
 	tConn := c.(*net.TCPConn)
 	tConn.SetNoDelay(true)
 
@@ -595,7 +596,7 @@ func newBasketConn(c net.Conn, sekrit []byte, isClient bool) (*basketConn, error
 		return nil, err
 	}
 
-	bConn := &basketConn{fileConn: fConn, isClient: isClient}
+	bConn := &BasketConn{fileConn: fConn, isClient: isClient}
 	bConn.writeChan = make(chan []byte, maxPendingFrames)
 	bConn.localAddr = c.LocalAddr()
 	bConn.remoteAddr = c.RemoteAddr()
@@ -654,7 +655,7 @@ type ClientConfig struct {
 	CertCheckFn func(*net.TCPAddr, cert.Certificate) error
 }
 
-func Dial(network string, addr *net.TCPAddr, config *ClientConfig) (*basketConn, error) {
+func Dial(network string, addr *net.TCPAddr, config *ClientConfig) (*BasketConn, error) {
 	// Generate the handshake request before the connection is opened.
 	ch, err := newClientHandshake(rand.Reader, config.Method, config.AuthKey)
 	if err != nil {
@@ -718,5 +719,5 @@ func readLenPrefixedData(c net.Conn) ([]byte, error) {
 }
 
 var _ net.Error = (*AcceptError)(nil)
-var _ net.Conn = (*basketConn)(nil)
+var _ net.Conn = (*BasketConn)(nil)
 var _ net.Listener = (*basketListener)(nil)
