@@ -65,7 +65,7 @@ Running:
    directive.
    * 'authKey=[hexdecimal authentication key]' - Optional client/server shared
      secret.
-   * 'signAlg=[0: Ed25519, 1: SPHINCS256' - Optional server signature
+   * 'signAlg=[0: Ed25519, 1: SPHINCS256]' - Optional server signature
      algorithm specifier (Default is SPHINCS256).
 
 Notes:

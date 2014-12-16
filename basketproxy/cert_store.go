@@ -34,12 +34,12 @@ import (
 	"github.com/yawning/basket/cert"
 )
 
-func logCertDigest(cert cert.Certificate) {
+func certDigest(cert cert.Certificate) string {
 	h := blake256.New()
 	h.Write(cert.PublicKey())
 	dig := h.Sum(nil)
 	digStr := hex.EncodeToString(dig[:16])
-	infof("Server Cert Digest: digest=%d:%s", int(cert.Algorithm()), digStr)
+	return fmt.Sprintf("%d:%s", int(cert.Algorithm()), digStr)
 }
 
 // loadOrGenerateCert loads (or generates and saves) a server certificate from
@@ -62,7 +62,6 @@ func loadOrGenerateCert(certFile string, alg cert.CertificateAlgorithm) (cert.Ce
 		if !cert.HasPrivateKey() {
 			return nil, errors.New("basketproxy: stored cert missing private key")
 		}
-		logCertDigest(cert)
 		return cert, nil
 	}
 
@@ -83,7 +82,6 @@ func loadOrGenerateCert(certFile string, alg cert.CertificateAlgorithm) (cert.Ce
 	if err = ioutil.WriteFile(certFile, blobB64, 0600); err != nil {
 		return nil, err
 	}
-	logCertDigest(cert)
 	return cert, nil
 }
 
@@ -175,14 +173,12 @@ func (k *knownHostsStore) checkCert(addr *net.TCPAddr, serverCert cert.Certifica
 		}
 
 		// Ok, treat this as a forced TOFU case since the digests match.
-		infof("Server Cert: %s: Trusting-On-First-Digest", addr)
 		k.hostMap[addrStr] = serverCert
 		return k.save()
 	}
 
 	if tofu {
 		// Trust On First Use.
-		infof("Server Cert: %s: Trusting-On-First-Use", addr)
 		k.hostMap[addrStr] = serverCert
 		return k.save()
 	}

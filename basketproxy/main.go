@@ -324,14 +324,14 @@ func main() {
 				// Load the known hosts store.
 				knownHosts, err = newKnownHosts(path.Join(stateDir, ptKnownHosts))
 				if err != nil {
-					// XXX: Log
+					errorf("newKnownHosts() failed: %s", err)
 					pt.CmethodError(methodName, err.Error())
 					continue
 				}
 
 				ln, err := pt.ListenSocks("tcp4", "127.0.0.1:0")
 				if err != nil {
-					// XXX: Log
+					errorf("pt.ListenSocks() failed: %s", err)
 					pt.CmethodError(methodName, err.Error())
 					continue
 				}
@@ -353,6 +353,8 @@ func main() {
 			methodName := bindaddr.MethodName
 			switch methodName {
 			case ptMethodName:
+				ptArgs := pt.Args{}
+
 				// If the user felt like specifying a signature algorithm,
 				// honor their decision.
 				signAlg := cert.AlgSphincs256
@@ -373,7 +375,10 @@ func main() {
 					pt.SmethodError(methodName, err.Error())
 					continue
 				}
+				certDigest := certDigest(serverCert)
 				infof("Server Cert: %s", serverCert.String())
+				infof("Server Cert Digest: %s", certDigest)
+				ptArgs.Add(digestArg, certDigest)
 
 				var authKey []byte
 				if authKeyStr, ok := bindaddr.Options.Get(authKeyArg); ok {
@@ -382,12 +387,13 @@ func main() {
 						pt.SmethodError(methodName, err.Error())
 						continue
 					}
+					ptArgs.Add(authKeyArg, authKeyStr)
 				}
 
 				cfg := &basket.ServerConfig{ServerCert: serverCert, AuthKey: authKey}
 				ln, err := basket.Listen("tcp", bindaddr.Addr, cfg)
 				if err != nil {
-					// XXX: Log
+					errorf("basket.Listen() failed: %s", err)
 					pt.SmethodError(methodName, err.Error())
 					continue
 				}
@@ -399,8 +405,7 @@ func main() {
 				}
 
 				go serverAcceptLoop(ln, &ptInfo)
-				// TODO: Publish the authKey and digest to BridgeDB.
-				pt.SmethodArgs(methodName, ln.Addr(), nil)
+				pt.SmethodArgs(methodName, ln.Addr(), ptArgs)
 				listeners = append(listeners, ln)
 			default:
 				pt.SmethodError(methodName, "no such method")
