@@ -21,7 +21,8 @@ import (
 	"errors"
 	"io"
 
-	"code.google.com/p/go.crypto/curve25519"
+	"golang.org/x/crypto/curve25519"
+
 	"github.com/dchest/blake512"
 )
 

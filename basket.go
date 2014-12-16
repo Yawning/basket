@@ -33,8 +33,8 @@ import (
 	"syscall"
 	"time"
 
-	"code.google.com/p/go.crypto/hkdf"
-	"code.google.com/p/go.crypto/nacl/secretbox"
+	"golang.org/x/crypto/hkdf"
+	"golang.org/x/crypto/nacl/secretbox"
 
 	"github.com/dchest/blake256"
 

@@ -28,7 +28,7 @@ PQ crypto primitives are broken, the adversary will still need a quantum
 computer).
 
 Dependencies:
- * code.google.com/p/go.crypto
+ * golang.org/x/crypto (AKA: code.google.com/p/go.crypto)
  * github.com/agl/ed25519
  * github.com/dchest/blake256
  * github.com/dchest/blake512
@@ -53,11 +53,12 @@ WARNINGS:
  * This is experimental and should not be used by anybody.
 
 Notes:
- * Go 1.4 and recent versions of go.crypto break the build.  Due to
-   requirements for other projects, development is currently done with Go
-   1.3.3 and go.crypto 231:7ad4bae3f467.  If you are building on Go 1.4 or
-   with a newer version of go.crypto, you will need to change the go.crypto
-   include paths to "golang.org/x/crypto".
+ * The Go developers moved go.crypto from code.google.com/p/go.crypto to
+   golang.org/x/crypto.  For a while go.crypto was broken on Go 1.3.x, and it
+   apepars that the golang.org version is the way forward.  The last known
+   working version of go.crypto is 231:7ad4bae3f467 (requires import statement
+   changes), though it appears that the newer version of the code works with Go
+   1.4 as well as Go 1.3.x.
  * I'll document the protocol when I get around to it, in the meanwhile read
    the code.
  * Pulling out the TCP/IP state via getsockopt is non-portable and requires
