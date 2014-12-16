@@ -41,6 +41,7 @@ import (
 
 var enableTofu bool
 var enableLogging bool
+var unsafeLogging bool
 var stateDir string
 var handlerChan chan int
 var knownHosts *knownHostsStore
@@ -55,6 +56,8 @@ const (
 	authKeyArg  = "authKey"
 	hsMethodArg = "hsMethod"
 	signArg     = "signAlg"
+
+	elidedAddr = "[scrubbed]"
 )
 
 func infof(format string, a ...interface{}) {
@@ -76,6 +79,38 @@ func warnf(format string, a ...interface{}) {
 		msg := fmt.Sprintf(format, a...)
 		log.Print("[WARN]: " + msg)
 	}
+}
+
+func elideAddr(addrStr string) string {
+	if unsafeLogging {
+		return addrStr
+	} else if addr, err := parseAddrPortStr(addrStr); err == nil {
+		return fmt.Sprintf("%s:%d", elidedAddr, addr.Port)
+	}
+	return elidedAddr
+}
+
+func elideError(err error) string {
+	if !unsafeLogging {
+		return err.Error()
+	}
+	if netErr, ok := err.(net.Error); ok {
+		switch t := netErr.(type) {
+		case *net.AddrError:
+			return t.Err + " " + elidedAddr
+		case *net.DNSError:
+			return "lookup " + elidedAddr + " on " + elidedAddr + ": " + t.Err
+		case *net.InvalidAddrError:
+			return "invalid address error"
+		case *net.UnknownNetworkError:
+			return "unknown network " + elidedAddr
+		case *net.OpError:
+			return t.Op + ": " + t.Err.Error()
+		default:
+			return fmt.Sprintf("network error: <%T>", t)
+		}
+	}
+	return err.Error()
 }
 
 func envError(msg string) error {
@@ -109,12 +144,15 @@ func clientAcceptLoop(socksListener *pt.SocksListener) error {
 }
 
 func clientHandler(socksConn *pt.SocksConn) {
+	addrStr := elideAddr(socksConn.Req.Target)
+	infof("%s: new connection", addrStr)
+
 	defer socksConn.Close()
 	handlerChan <- 1
 	defer func() {
 		handlerChan <- -1
 		if r := recover(); r != nil {
-			warnf("clientHandler() recovered: %s", r)
+			warnf("%s: clientHandler() recovered: %s", addrStr, r)
 		}
 	}()
 
@@ -123,7 +161,7 @@ func clientHandler(socksConn *pt.SocksConn) {
 	// does not.
 	tAddr, err := parseAddrPortStr(socksConn.Req.Target)
 	if err != nil {
-		warnf("parseAddrPortStr() failed: %s", err)
+		warnf("%s: parseAddrPortStr() failed: %s", addrStr, elideError(err))
 		socksConn.Reject()
 		return
 	}
@@ -131,7 +169,7 @@ func clientHandler(socksConn *pt.SocksConn) {
 	// Optionally use a short digest identifier instead of TOFU.
 	if digestStr, ok := socksConn.Req.Args.Get(digestArg); ok {
 		if err := knownHosts.registerDigest(tAddr, digestStr); err != nil {
-			warnf("knownHosts.registerDigest() failed: %s", err)
+			warnf("%s: knownHosts.registerDigest() failed: %s", addrStr, elideError(err))
 			socksConn.Reject()
 			return
 		}
@@ -142,7 +180,7 @@ func clientHandler(socksConn *pt.SocksConn) {
 	if hsMethodStr, ok := socksConn.Req.Args.Get(hsMethodArg); ok {
 		hsMethod, err = basket.HandshakeMethodFromString(hsMethodStr)
 		if err != nil {
-			warnf("invalid hsMethod: %s", err)
+			warnf("%s: invalid hsMethod: %s", addrStr, elideError(err))
 			socksConn.Reject()
 			return
 		}
@@ -152,7 +190,7 @@ func clientHandler(socksConn *pt.SocksConn) {
 	var authKey []byte
 	if authKeyStr, ok := socksConn.Req.Args.Get(authKeyArg); ok {
 		if authKey, err = hex.DecodeString(authKeyStr); err != nil {
-			warnf("invalid authKey: %s", err)
+			warnf("%s: invalid authKey: %s", addrStr, elideError(err))
 			socksConn.Reject()
 			return
 		}
@@ -161,20 +199,20 @@ func clientHandler(socksConn *pt.SocksConn) {
 	cfg := &basket.ClientConfig{Method: hsMethod, CertCheckFn: checkServerCert, AuthKey: authKey}
 	basketConn, err := basket.Dial("tcp", tAddr, cfg)
 	if err != nil {
-		warnf("basket.Dial() failed: %s", err)
+		warnf("%s: basket.Dial() failed: %s", addrStr, elideError(err))
 		socksConn.Reject()
 		return
 	}
 	defer basketConn.Close()
 	if err = socksConn.Grant(basketConn.RemoteAddr().(*net.TCPAddr)); err != nil {
-		warnf("socksConn.Grant() failed: %s", err)
+		warnf("%s: socksConn.Grant() failed: %s", addrStr, elideError(err))
 		return
 	}
 
 	if err = copyLoop(socksConn, basketConn); err != nil {
-		// XXX: Log.
+		warnf("%s: connection closed: %s", addrStr, elideError(err))
 	} else {
-		// XXX: Clean connection termination.
+		infof("%s: connection closed", addrStr)
 	}
 }
 
@@ -188,7 +226,7 @@ func serverAcceptLoop(ln net.Listener, info *pt.ServerInfo) error {
 	for {
 		basketConn, err := ln.Accept()
 		if err != nil {
-			warnf("ln.Accept() failed: %s\n", err)
+			warnf("ln.Accept() failed: %s\n", elideError(err))
 			if e, ok := err.(net.Error); ok && !e.Temporary() {
 				return err
 			}
@@ -199,25 +237,28 @@ func serverAcceptLoop(ln net.Listener, info *pt.ServerInfo) error {
 }
 
 func serverHandler(basketConn net.Conn, info *pt.ServerInfo) {
+	addrStr := elideAddr(basketConn.RemoteAddr().String())
+	infof("%s: new connection", addrStr)
+
 	defer basketConn.Close()
 	handlerChan <- 1
 	defer func() {
 		handlerChan <- 1
 		if r := recover(); r != nil {
-			warnf("serverHandler(): recovered: %s", r)
+			warnf("%s: serverHandler(): recovered: %s", addrStr, r)
 		}
 	}()
 
 	orConn, err := pt.DialOr(info, basketConn.RemoteAddr().String(), ptMethodName)
 	if err != nil {
-		warnf("pt.DialOr() failed: %s", err)
+		warnf("%s: pt.DialOr() failed: %s", addrStr, elideError(err))
 		return
 	}
 	defer orConn.Close()
 	if err = copyLoop(orConn, basketConn); err != nil {
-		// XXX: Log.
+		warnf("%s: connection closed: %s", addrStr, elideError(err))
 	} else {
-		// XXX: Clean connection termination.
+		infof("%s: connection closed", addrStr)
 	}
 }
 
@@ -261,13 +302,7 @@ func copyLoop(a, b net.Conn) error {
 }
 
 func checkServerCert(addr *net.TCPAddr, serverCert cert.Certificate) error {
-	err := knownHosts.checkCert(addr, serverCert, enableTofu)
-	if err == nil {
-		infof("Server Cert: %s: %s", addr, serverCert.String())
-	} else {
-		errorf("Server Cert: %s: VERIFICATION FAILED: %s", addr, err)
-	}
-	return err
+	return knownHosts.checkCert(addr, serverCert, enableTofu)
 }
 
 func parseAddrPortStr(s string) (*net.TCPAddr, error) {
@@ -288,6 +323,7 @@ func parseAddrPortStr(s string) (*net.TCPAddr, error) {
 
 func main() {
 	flag.BoolVar(&enableLogging, "enableLogging", false, "Log to TOR_PT_STATE_LOCATION/"+ptLogFile)
+	flag.BoolVar(&unsafeLogging, "unsafeLogging", false, "Disable the IP address scrubber")
 	flag.BoolVar(&enableTofu, "enableTofu", true, "Trust-On-First-Use for server identity certs")
 	flag.Parse()
 
@@ -310,12 +346,15 @@ func main() {
 		log.SetOutput(ioutil.Discard)
 	}
 
+	infof("basketproxy - launched")
+
 	handlerChan = make(chan int)
 	var listeners []net.Listener
 	if isClient {
 		ptInfo, err := pt.ClientSetup([]string{ptMethodName})
 		if err != nil {
 			errorf("pt.ClientSetup() failed: %s", err)
+			os.Exit(-1)
 		}
 
 		for _, methodName := range ptInfo.MethodNames {
@@ -347,6 +386,7 @@ func main() {
 		ptInfo, err := pt.ServerSetup([]string{ptMethodName})
 		if err != nil {
 			errorf("pt.ServerSetup() failed: %s", err)
+			os.Exit(-1)
 		}
 
 		for _, bindaddr := range ptInfo.Bindaddrs {
@@ -393,7 +433,7 @@ func main() {
 				cfg := &basket.ServerConfig{ServerCert: serverCert, AuthKey: authKey}
 				ln, err := basket.Listen("tcp", bindaddr.Addr, cfg)
 				if err != nil {
-					errorf("basket.Listen() failed: %s", err)
+					errorf("basket.Listen() failed: %s", elideError(err))
 					pt.SmethodError(methodName, err.Error())
 					continue
 				}
@@ -416,6 +456,11 @@ func main() {
 	if len(listeners) == 0 {
 		os.Exit(-1)
 	}
+
+	infof("basketproxy - accepting connections")
+	defer func() {
+		infof("basketproxy - terminated")
+	}()
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

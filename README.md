@@ -83,9 +83,6 @@ Notes:
  * Not using the obfs4proxy framework is a licensing/packaging based decision
    rather than a technical one.
 
-TODO:
- * Clean up logging.
-
 Acknowledgements:
  * Thanks to Marc Juarez (KU Leuven) and Mike Perry, who provided inspiration
    and kickstarted my interest in this subject.
