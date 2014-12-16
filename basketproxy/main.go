@@ -32,6 +32,7 @@ import (
 	"strconv"
 	"sync"
 	"syscall"
+	"time"
 
 	"git.torproject.org/pluggable-transports/goptlib.git"
 
@@ -41,6 +42,7 @@ import (
 
 var enableTofu bool
 var enableLogging bool
+var enableStatLogging bool
 var unsafeLogging bool
 var stateDir string
 var handlerChan chan int
@@ -58,6 +60,8 @@ const (
 	signArg     = "signAlg"
 
 	elidedAddr = "[scrubbed]"
+
+	statLogInterval = 30 * time.Second
 )
 
 func infof(format string, a ...interface{}) {
@@ -127,6 +131,19 @@ func ptIsClient() (bool, error) {
 		return false, envError("not launched as a managed transport")
 	}
 	return clientEnv != "", nil
+}
+
+func statLogger(c *basket.BasketConn, addrStr string) {
+	for {
+		time.Sleep(statLogInterval)
+		s, err := c.Stats()
+		if err != nil {
+			return
+		}
+
+		infof("%s: RX Framing: %d Payload: %d Cover: %d", addrStr, s.RxFramingBytes, s.RxPayloadBytes, s.RxCoverBytes)
+		infof("%s: TX Framing: %d Payload: %d Cover: %d", addrStr, s.TxFramingBytes, s.TxPayloadBytes, s.TxCoverBytes)
+	}
 }
 
 func clientAcceptLoop(socksListener *pt.SocksListener) error {
@@ -209,6 +226,10 @@ func clientHandler(socksConn *pt.SocksConn) {
 		return
 	}
 
+	if enableStatLogging {
+		go statLogger(basketConn, addrStr)
+	}
+
 	if err = copyLoop(socksConn, basketConn); err != nil {
 		warnf("%s: connection closed: %s", addrStr, elideError(err))
 	} else {
@@ -256,6 +277,11 @@ func serverHandler(c net.Conn, info *pt.ServerInfo) {
 		return
 	}
 	defer orConn.Close()
+
+	if enableStatLogging {
+		go statLogger(basketConn, addrStr)
+	}
+
 	if err = copyLoop(orConn, basketConn); err != nil {
 		warnf("%s: connection closed: %s", addrStr, elideError(err))
 	} else {
@@ -324,6 +350,7 @@ func parseAddrPortStr(s string) (*net.TCPAddr, error) {
 
 func main() {
 	flag.BoolVar(&enableLogging, "enableLogging", false, "Log to TOR_PT_STATE_LOCATION/"+ptLogFile)
+	flag.BoolVar(&enableStatLogging, "enableStatLogging", false, "Log per-connection stats")
 	flag.BoolVar(&unsafeLogging, "unsafeLogging", false, "Disable the IP address scrubber")
 	flag.BoolVar(&enableTofu, "enableTofu", true, "Trust-On-First-Use for server identity certs")
 	flag.Parse()

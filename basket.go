@@ -43,8 +43,15 @@ import (
 )
 
 const (
-	frameSize      = 1500 - (14 + 20 + 32)         // XXX: 1498 instead of 1500?
-	maxPayloadSize = frameSize - (boxOverhead + 2) // ->543 bytes?
+	// Raw untuned parameters that chews a stupid amount of bandwidth.
+	// frameSize      = 1500 - (14 + 20 + 32)      // XXX: 1498 instead of 1500?
+	// maxPayloadSize = frameSize - (boxOverhead + 2)
+
+	// Parameters based around a TLS record encapsulated Tor cell.  The
+	// CS-BuFLO paper uses 600 bytes, but we can get away with smaller since we
+	// know that Tor writes fixed sized cells.
+	frameSize      = maxPayloadSize + (boxOverhead + 2)
+	maxPayloadSize = 543
 
 	maxPendingFrames = 64
 
@@ -54,9 +61,16 @@ const (
 	boxOverhead        = secretbox.Overhead
 
 	connectTimeout = 30 * time.Second
-	initialRho     = 1 * time.Millisecond // XXX: Lengthen this?
-	upperRho       = 4 * time.Millisecond
-	quietTime      = 2 * time.Second // XXX: Shorten this?
+
+	// Raw untuned link adaption parameters taken from the CS-BuFLO paper/code.
+	// initialRho     = 1 * time.Millisecond
+	// upperRho       = 4 * time.Millisecond
+	// quietTime      = 2 * time.Second
+
+	// Somewhat more conservative link adaption parameters.
+	initialRho = 5 * time.Millisecond
+	upperRho   = 20 * time.Millisecond
+	quietTime  = 250 * time.Millisecond
 )
 
 var ErrCounterWrapped = errors.New("nonce counter wrapped")
@@ -187,6 +201,17 @@ func Listen(network string, laddr *net.TCPAddr, config *ServerConfig) (*basketLi
 	return &basketListener{ln: l, serverCert: config.ServerCert, authKey: config.AuthKey}, nil
 }
 
+// BasketStats is the datastructure containing per-connection statistics.
+type BasketStats struct {
+	RxFramingBytes uint64
+	RxPayloadBytes uint64
+	RxCoverBytes   uint64
+
+	TxFramingBytes uint64
+	TxPayloadBytes uint64
+	TxCoverBytes   uint64
+}
+
 // BasketConn is the basket net.Conn data type.
 type BasketConn struct {
 	sync.Mutex
@@ -215,6 +240,8 @@ type BasketConn struct {
 	junkBytes            uint64
 	rhoStar              time.Duration
 	rhoStats             statsAccumulator
+
+	connStats BasketStats
 }
 
 func (c *BasketConn) Read(b []byte) (n int, err error) {
@@ -272,6 +299,12 @@ func (c *BasketConn) Read(b []byte) (n int, err error) {
 			c.rhoStats.add(time.Time{})
 			// (onLoadEvent <- 0, padding-done <- 0) - Skipped.
 		}
+
+		c.Lock()
+		c.connStats.RxFramingBytes += boxOverhead + 2
+		c.connStats.RxPayloadBytes += uint64(payloadLen)
+		c.connStats.RxCoverBytes += uint64(maxPayloadSize - payloadLen)
+		c.Unlock()
 	}
 	return c.recvBuf.Read(b)
 }
@@ -353,6 +386,24 @@ func (c *BasketConn) SetReadDeadline(t time.Time) error {
 
 func (c *BasketConn) SetWriteDeadline(t time.Time) error {
 	return syscall.ENOTSUP
+}
+
+func (c *BasketConn) Stats() (*BasketStats, error) {
+	c.Lock()
+	defer c.Unlock()
+
+	s := &BasketStats{
+		RxFramingBytes: c.connStats.RxFramingBytes,
+		RxPayloadBytes: c.connStats.RxPayloadBytes,
+		RxCoverBytes:   c.connStats.RxCoverBytes,
+		TxFramingBytes: c.connStats.TxFramingBytes,
+		TxPayloadBytes: c.connStats.TxPayloadBytes,
+		TxCoverBytes:   c.connStats.TxCoverBytes,
+	}
+	if c.isClosed {
+		return s, syscall.EBADF
+	}
+	return s, nil
 }
 
 func (c *BasketConn) doWrite(b []byte) (n, j int, err error) {
@@ -466,6 +517,10 @@ writeLoop:
 						c.Close()
 						return
 					}
+					c.Lock()
+					c.connStats.TxFramingBytes += boxOverhead + 2
+					c.connStats.TxCoverBytes += maxPayloadSize
+					c.Unlock()
 				}
 			}
 		}
@@ -489,6 +544,12 @@ writeLoop:
 				c.Close()
 				return
 			}
+
+			c.Lock()
+			c.connStats.TxFramingBytes += boxOverhead + 2
+			c.connStats.TxPayloadBytes += uint64(len(frame))
+			c.connStats.TxCoverBytes += uint64(maxPayloadSize - len(frame))
+			c.Unlock()
 			frame = nil
 		}
 
