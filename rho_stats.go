@@ -1,4 +1,4 @@
-// stats.go - CS-BuFLO rho-stats accumulator
+// rho_stats.go - CS-BuFLO rho-stats accumulator
 // Copyright (C) 2014  Yawning Angel
 //
 // This program is free software: you can redistribute it and/or modify
