@@ -416,7 +416,7 @@ writeLoop:
 		// setting the socket to non-blocking mode and doing a YOLO write.
 		// Basket does the smart thing and queries the socket information to
 		// see if a Write of the target size will go through without blocking.
-		if cap, err := kist.EstimateWriteCapacity(c.fileConn); err == nil {
+		if cap, err := kist.EstimateWriteCapacity(c.fileConn); err == nil && ok {
 			// Failures are probably catastrophic, but since they are unlikely,
 			// just assume that the link has capacity if we fail to get an
 			// estimate.
@@ -430,7 +430,7 @@ writeLoop:
 			}
 		}
 
-		if frame != nil {
+		if frame != nil || !ok {
 			// This the channel read from isTxIdle unblocking.  We already have
 			// a frame from the previous read, and were just interested in
 			// making sure that KIST thinks we can still send.
@@ -466,7 +466,6 @@ writeLoop:
 						return
 					}
 				}
-				ok = true
 			}
 		}
 		if !ok {
